@@ -21,6 +21,10 @@ description:         Please see the README on Github at <https://github.com/Reed
 
 dependencies:
 - base >= 4.7 && < 5
+- lens
+- split
+- directory
+- scotty
 
 library:
   source-dirs: src
