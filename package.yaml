@@ -25,12 +25,22 @@ dependencies:
 - split
 - directory
 - scotty
+- postgresql-simple
+- optparse-applicative
+- text
+- bytestring
+- wreq
+- hostname
+- containers
+- unordered-containers
+- aeson
+- lens-aeson
 
 library:
   source-dirs: src
 
 executables:
-  Amphictyonis-exe:
+  amphi:
     main:                Main.hs
     source-dirs:         app
     ghc-options:
