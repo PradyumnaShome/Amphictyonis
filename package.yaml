@@ -35,6 +35,11 @@ dependencies:
 - unordered-containers
 - aeson
 - lens-aeson
+- yaml
+- network-uri
+- process
+- filepath
+- mtl
 
 library:
   source-dirs: src

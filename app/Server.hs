@@ -6,10 +6,13 @@ import Control.Monad.IO.Class
 
 import Database.PostgreSQL.Simple
 
-import Data.Maybe (isJust)
-import Data.Monoid (mconcat)
+import Data.Aeson ((.=), object)
 import qualified Data.ByteString.Lazy as B
 import qualified Data.ByteString.Lazy.Char8 as Char8
+import Data.Map (Map)
+import qualified Data.Map as Map
+import Data.Maybe (isJust)
+import Data.Monoid (mconcat)
 import qualified Data.Text.Lazy as T
 
 import Web.Scotty
@@ -22,7 +25,7 @@ server = scotty 3000 $ do
         job <- param "job" :: ActionM T.Text
         [Only taskId] <- liftIO (runFunction "select tasks_get_next(?)" (Only job) :: IO [Only (Maybe Int)])
         dataItems <- liftIO (runFunction "select task_data_get(?)" (Only taskId) :: IO [(String, String)])
-        text job
+        json $ object ["taskId" .= taskId, "data" .= Map.fromList dataItems]
 
     get "/retrieve/:job/exists" $ do
         job <- param "job" :: ActionM String
@@ -41,17 +44,12 @@ server = scotty 3000 $ do
         [Only worker_id] <- liftIO (runFunction "select workers_insert(?, ?)" (name, job) :: IO [Only Int])
         text $ T.pack $ show worker_id
 
-    post "/report/:job/:id/data" $ do
-        -- inputData <- jsonData
-        pure ()
+    post "/report/:id/:workerId/status" $ do
+        status <- param "status" :: ActionM String
+        taskId <- read <$> param "id" :: ActionM Int
+        workerId <- read <$> param "workerId" :: ActionM Int
 
-    post "/report/:job/:id/file" $ do
-        -- inputData <- jsonData
-        pure ()
+        liftIO (runFunction "select task_log_insert(?, ?, ?)" (taskId, workerId, status) :: IO [Only ()])
 
-    post "/submit/new-job" $ do
-        jobName <- param "jobName" :: ActionM String
-
-        liftIO (runFunction "select jobs_insert(?)" (Only jobName) :: IO [Only ()])
         pure ()
 
