@@ -1,14 +1,18 @@
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Types where
 
 import Control.Lens
 
-import Data.List (isSuffixOf)
+import Data.Char
+import Data.List (isSuffixOf, dropWhileEnd)
 import Data.Maybe (fromMaybe)
 import Data.Yaml
 
 import Network.URI
+
+import System.FilePath
 
 data SourceType = Git | Server
     deriving (Show, Eq)
@@ -35,7 +39,13 @@ makeLenses ''File
 data Config = Config
     { _jobName :: String
     , _jobVersion :: Maybe String
-    , _workerRoot :: File }
+    , _workerRoot :: File
+    , _reusePaths :: Bool
+    , _workingPath :: String
+    , _resultPaths :: [String]
+    , _diffUpload :: Bool
+    , _dataSources :: [SystemCommand]
+    , _runner :: [SystemCommand] }
     deriving Show
 
 makeLenses ''Config
@@ -46,8 +56,10 @@ data FileOperation = Mkdir | Touch
 data FileSolution = GitClone String String
                   | ServerRequest String String
                   | FileOp FileOperation String
-                  | RunCommand SystemCommand
+                  | RunCommand FilePath SystemCommand
     deriving Show
+
+trim = dropWhileEnd isSpace . dropWhile isSpace
 
 getSourceType :: String -> SourceType
 getSourceType "git" = Git
@@ -60,18 +72,20 @@ parseSource strURI =
         Nothing -> error $ "Invalid uri: " ++ strURI
         Just uri -> Source (getSourceType (init (uriScheme uri))) (uriToString id uri "")
 
-directoryLike :: [File] -> Maybe Source -> Bool
-directoryLike _ Nothing = True -- If we don't get the file from anywhere, let's assume it's a directory.
-directoryLike contents (Just source) =
-    source ^. sourceType == Git ||
-    not (null contents) ||
-    "/" `isSuffixOf` (source ^. sourceURI)
+directoryLike :: String -> [File] -> Maybe Source -> Bool
+-- If it doesn't have an extension, it's probably a directory.
+directoryLike name _ Nothing = null (takeExtension name)
+directoryLike name contents (Just source) =
+    (source ^. sourceType == Git ||
+     not (null contents) ||
+     "/" `isSuffixOf` (source ^. sourceURI)) && null (takeExtension name)
 
 instance FromJSON SystemCommand where
     parseJSON x = SystemCommand <$> parseJSON x -- It's just a list of strings, so we don't have to write it ourselves.
 
 instance FromJSON File where
     parseJSON (Object obj) = do
+        name <- obj .: "name"
         strURI <- obj .:? "source"
         children <- obj .:? "dir"
 
@@ -81,10 +95,10 @@ instance FromJSON File where
 
         contents <- mapM parseJSON (fromMaybe [] children)
 
-        File <$> obj.:"name"
+        File <$> (trim <$> (obj.:"name"))
              <*> pure source
-             <*> obj.:"name"
-             <*> pure (directoryLike contents source)
+             <*> (trim <$> (obj.:"name"))
+             <*> pure (directoryLike name contents source)
              <*> mapM parseJSON (fromMaybe [] script)
              <*> pure contents
 
@@ -93,4 +107,10 @@ instance FromJSON Config where
         Config <$> obj.:"name"
                <*> obj.:?"version"
                <*> (parseJSON =<< obj.:"worker-dir")
+               <*> (fromMaybe True <$> obj.:?"reuse-paths")
+               <*> (trim . fromMaybe "." <$> obj.:?"working-path")
+               <*> (map trim <$> (mapM parseJSON =<< (fromMaybe ["."] <$> obj.:?"result-paths")))
+               <*> (fromMaybe True <$> obj.:?"diff-upload")
+               <*> (mapM parseJSON =<< (fromMaybe [] <$> obj .:? "data-sources"))
+               <*> (mapM parseJSON =<< (fromMaybe [] <$> obj .:? "runner"))
 

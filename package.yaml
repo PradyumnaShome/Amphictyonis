@@ -40,6 +40,11 @@ dependencies:
 - process
 - filepath
 - mtl
+- time
+- MissingH
+- parsec
+- zlib
+- base64-bytestring
 
 library:
   source-dirs: src

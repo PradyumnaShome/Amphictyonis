@@ -1,16 +1,24 @@
 name: Sample
 version: 1.0.0.0 # Optional
 
+reuse-paths: true
+
+working-path: Prime-Sample
+result-paths:
+    - .
+diff-upload: true
+
+data-sources:
+    - cat prime-ranges.csv
+
+runner:
+    - Prime-Sample | tee log.txt
+
 worker-dir:
     name: worker-Prime-Sample
     dir:
         - name: Prime-Sample
           source: git://github.com/ReedOei/Prime-Sample.git
-          dir:
-              - name: log.txt
-              - name: test.zip
-                source: server://file/test.zip
-                script:
-                    - unzip test.zip
-
+          script:
+              - stack install
 

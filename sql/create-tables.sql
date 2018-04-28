@@ -1,6 +1,7 @@
 CREATE TABLE jobs (
     job_id serial PRIMARY KEY,
-    name varchar NOT NULL
+    name varchar NOT NULL,
+    config varchar NOT NULL
 );
 
 CREATE TABLE script_types (
@@ -26,7 +27,8 @@ CREATE TABLE scripts (
 CREATE TABLE tasks (
     task_id serial PRIMARY KEY,
     job_id integer NOT NULL,
-    finished boolean NOT NULL
+    -- How many times this has been finished. For most jobs, once is enough, but can be higher to make sure it gets checked.
+    finished integer NOT NULL
 );
 
 CREATE TABLE task_data (
@@ -34,6 +36,23 @@ CREATE TABLE task_data (
     task_id integer NOT NULL,
     key varchar NOT NULL,
     value varchar
+);
+
+CREATE TABLE job_files (
+    job_file_id serial PRIMARY KEY,
+    job_id integer NOT NULL,
+    file_path varchar NOT NULL,
+    -- base 64 encoded.
+    file_content varchar NOT NULL
+);
+
+CREATE TABLE result_files (
+    result_file_id serial PRIMARY KEY,
+    job_id integer NOT NULL,
+    task_id integer NOT NULL,
+    file_path varchar NOT NULL,
+    -- base 64 encoded.
+    file_content varchar NOT NULL
 );
 
 CREATE TABLE task_log (

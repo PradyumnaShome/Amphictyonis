@@ -1,13 +1,13 @@
 CREATE OR REPLACE FUNCTION task_data_get
 (
-    task_id integer
+    task_id_lookup integer
 )
-RETURNS TABLE(task_data_id integer, key varchar, value varchar) AS $$
+RETURNS TABLE(key varchar, value varchar) AS $$
 BEGIN
     RETURN QUERY
-    SELECT task_data_id, key, value
+    SELECT td.key, td.value
     FROM task_data as td
-    WHERE td.task_id = task_id;
+    WHERE td.task_id = task_id_lookup;
 END
 $$ LANGUAGE plpgsql;
 

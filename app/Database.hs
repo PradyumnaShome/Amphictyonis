@@ -4,6 +4,7 @@ module Database where
 
 import Database.PostgreSQL.Simple
 
+import Data.List (intercalate)
 import Data.Int (Int64)
 
 connection :: IO Connection
@@ -32,4 +33,7 @@ executeFunction func args = do
     close conn
 
     pure result
+
+toArray :: Show a => [a] -> String
+toArray vs = "{" ++ intercalate "," (map show vs) ++ "}"
 
