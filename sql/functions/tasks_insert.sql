@@ -13,8 +13,8 @@ BEGIN
     WHERE name = job_name
     INTO job_id_lookup;
 
-    INSERT INTO tasks (job_id, finished)
-    VALUES (job_id_lookup, 0)
+    INSERT INTO tasks (job_id)
+    VALUES (job_id_lookup)
     RETURNING task_id INTO new_task_id;
 
     FOR i IN array_lower(task_data_keys, 1)..array_upper(task_data_keys, 1)

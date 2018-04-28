@@ -1,4 +1,4 @@
-CREATE OR REPLACE FUNCTION jobs_insert
+CREATE OR REPLACE FUNCTION scripts_insert
 (
     job_name varchar,
     os_name varchar,

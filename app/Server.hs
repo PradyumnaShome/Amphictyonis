@@ -34,15 +34,15 @@ server = scotty 3000 $ do
         dataItems <- liftIO (runFunction "select * from task_data_get(?)" (Only taskId) :: IO [(String, String)])
         json $ object ["taskId" .= taskId, "data" .= Map.fromList dataItems]
 
-    get "/retrieve/:job/exists" $ do
-        job <- param "job" :: ActionM String
-        results <- liftIO (runFunction "select tasks_get_next(?)" (Only job) :: IO [Only Integer])
-        text $ T.pack $ show $ not $ null results
-
     get "/retrieve/:job/id" $ do
         job <- param "job" :: ActionM String
-        [Only result] <- liftIO (runFunction "select tasks_get_next(?)" (Only job) :: IO [Only Integer])
-        text $ T.pack $ show result
+        result <- liftIO (runFunction "select tasks_get_next(?)" (Only job) :: IO [Only Integer])
+
+        -- Give empty response, client will know it means there is no more work.
+        if null result then
+            text ""
+        else
+            text $ T.pack $ show $ head result
 
     get "/retrieve/:job/new-worker/:name" $ do
         job <- param "job" :: ActionM String
@@ -62,9 +62,16 @@ server = scotty 3000 $ do
     get "/retrieve/:job/config" $ do
         job <- param "job" :: ActionM String
 
-        [Only fileContents] <- liftIO (runFunction "select jobs_config_get(?)" (Only job) :: IO [Only B.ByteString])
+        [Only fileContents] <- liftIO (runFunction "select configs_get(?)" (Only job) :: IO [Only B.ByteString])
 
         raw fileContents
+
+    get "/report/:workerId/aborted" $ do
+        workerId <- read <$> param "workerId" :: ActionM Int
+
+        liftIO (runFunction "select tasks_aborted(?)" (Only workerId) :: IO [Only ()])
+
+        pure ()
 
     post "/report/:id/:workerId/status" $ do
         status <- param "status" :: ActionM String

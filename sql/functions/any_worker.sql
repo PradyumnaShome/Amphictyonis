@@ -5,14 +5,21 @@ CREATE OR REPLACE FUNCTION any_worker
 )
 RETURNS boolean AS $$
 DECLARE newest_time timestamp;
+DECLARE timeout_length interval;
 BEGIN
     SELECT MAX(log_time)
     FROM task_log
     WHERE task_id = task_id_lookup
     INTO newest_time;
 
-    -- TODO: Let this be configurable based on job.
-    IF (now() - interval '1 hour') > newest_time THEN
+    SELECT timeout
+    FROM configs AS c
+    INNER JOIN jobs AS j on j.job_id = c.job_id
+    INNER JOIN tasks AS t on t.job_id = j.job_id
+    WHERE t.task_id = task_id_lookup
+    INTO timeout_length;
+
+    IF (now() - timeout_length) > newest_time THEN
         RETURN FALSE;
     ELSE
         RETURN

@@ -1,7 +1,15 @@
 CREATE TABLE jobs (
     job_id serial PRIMARY KEY,
-    name varchar NOT NULL,
-    config varchar NOT NULL
+    name varchar NOT NULL
+);
+
+CREATE TABLE configs (
+    config_id serial PRIMARY KEY,
+    job_id integer NOT NULL,
+    version varchar NOT NULL,
+    version_date timestamp NOT NULL,
+    config varchar NOT NULL,
+    timeout interval NOT NULL
 );
 
 CREATE TABLE script_types (
@@ -26,9 +34,7 @@ CREATE TABLE scripts (
 
 CREATE TABLE tasks (
     task_id serial PRIMARY KEY,
-    job_id integer NOT NULL,
-    -- How many times this has been finished. For most jobs, once is enough, but can be higher to make sure it gets checked.
-    finished integer NOT NULL
+    job_id integer NOT NULL
 );
 
 CREATE TABLE task_data (

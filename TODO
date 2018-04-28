@@ -1,0 +1,6 @@
+- Add ability to "sql-ize" (create table schema/insert data) from .xml and .csv files that share a common format.
+
+- Add amphi.conf file that can control things like reuse paths (and the location of the amphi server, name, etc).
+
+- Make amphi always write to a $AMPHI_HOME directory (default .amphi-work)
+

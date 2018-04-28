@@ -3,6 +3,8 @@
 
 module Client.Client where
 
+import Control.Concurrent
+import Control.Exception
 import Control.Lens
 import Control.Monad
 
@@ -46,20 +48,12 @@ newWorker job = do
         Nothing -> error $ show response
         Just i -> pure i
 
-isWork :: String -> IO Bool
-isWork jobName = do
-    let url = "http://localhost:3000/retrieve/" ++ jobName ++ "/exists"
-    response <- get url
-
-    pure $ fromMaybe False $ read . Char8.unpack <$> response ^? responseBody
-
-getWork :: String -> Int -> IO (Int, Map String String)
+getWork :: String -> Int -> IO (Maybe (Int, Map String String))
 getWork jobName workerId = do
     let url = "http://localhost:3000/retrieve/" ++ jobName ++ "/data"
     response <- asValue =<< get url
 
-    pure $ fromMaybe (error "Failed to decode response.") $
-        flip parseMaybe (response ^. responseBody) $ \(Object obj) -> do
+    pure $ flip parseMaybe (response ^. responseBody) $ \(Object obj) -> do
             taskId <- obj .: "taskId"
             d <- obj .: "data"
 
@@ -73,13 +67,71 @@ reportStatus taskId workerId status = do
     -- TODO: Handle an error.
     pure ()
 
+aborted :: Int -> IO ()
+aborted workerId = do
+    let url = "http://localhost:3000/report/" ++ show workerId ++ "/aborted"
+    get url
+
+    -- TODO: Handle an error.
+    pure ()
+
+doWork :: Int -> Config -> IO (Maybe (Int, ExitCode))
+doWork workerId config = do
+    curPath <- getCurrentDirectory
+
+    let workingPath = getWorkingPath config
+
+    setCurrentDirectory workingPath
+
+    taskInfo <- getWork (config ^. jobName) workerId
+    case taskInfo of
+        Nothing -> do
+            putStrLn $ "No more work to do for '" ++ (config ^. jobName) ++ "'"
+            pure Nothing
+        Just (taskId, jobData) -> do
+            putStrLn $ "Running task: " ++ show taskId
+
+            let resultPaths = getResultPaths config
+
+            curFiles <- foldl Map.union Map.empty <$> mapM (listFiles False) resultPaths
+
+            -- Report that we started it and then run the commands
+            reportStatus taskId workerId "running"
+            (exitCode,_,_) <- runSysCommands jobData (config ^. runner)
+
+            -- Check for new files, if that's a thing we do.
+            newFiles <- foldl Map.union Map.empty <$> mapM (listFiles False) resultPaths
+
+            when (config ^. diffUpload) $ do
+                let diff = Map.differenceWith (\cur new -> if cur >= new then Nothing else Just new) curFiles newFiles
+                let diffKeys = Map.keys diff ++ (Map.keys newFiles \\ Map.keys curFiles) -- Make sure to include new files as well as modified files.
+
+                -- Upload new/modified files.
+                mapM_ (\p -> whenM (doesFileExist p) $ do
+                                putStrLn $ "Uploading: " ++ p
+                                uploadFile (config ^. jobName) taskId p) diffKeys
+
+            setCurrentDirectory curPath
+
+            pure $ Just (taskId, exitCode)
+
+setupJob :: String -> IO Config
+setupJob job = do
+    -- We want to do everything in a separate directory.
+    createDirectoryIfMissing True job
+    setCurrentDirectory job
+
+    putStrLn "Getting latest config.yaml."
+    contents <- requestConfig job
+    writeFile "config.yaml" contents
+
+    readConfig "config.yaml"
+
 runJob :: String -> IO ()
 runJob job = do
     curPath <- getCurrentDirectory
 
-    -- We want to do everything in a separate directory.
-    createDirectoryIfMissing True job
-    setCurrentDirectory job
+    config <- setupJob job
 
     workerId <- newWorker job
     putStrLn $ "Got worker id: " ++ show workerId
@@ -88,61 +140,31 @@ runJob job = do
     createDirectoryIfMissing True workingPath
     setCurrentDirectory workingPath
 
-    putStrLn "Looking for config.yaml"
-    whenM (not <$> doesPathExist "config.yaml") $ do
-        contents <- requestConfig job
-        writeFile "config.yaml" contents
-
-    config <- readConfig "config.yaml"
-
     putStrLn "Beginning runner loop."
 
-    if config ^. reusePaths then do
-        workConfig <- initStructure config
-        runnerLoopNoSetup workConfig workerId
-        pure ()
-    else
-        runnerLoop config workerId
+    flip onException (abort curPath workerId) $ do
+        if config ^. reusePaths then do
+            workConfig <- initStructure config
+            runnerLoopNoSetup workConfig workerId
+            pure ()
+        else
+            runnerLoop config workerId
 
-    setCurrentDirectory curPath
+        setCurrentDirectory curPath
 
     where
+        abort path workerId = do
+            putStrLn "Aborting current task..."
+            aborted workerId
+
+            setCurrentDirectory path
+
         runnerLoopNoSetup config workerId = do
-            workExists <- isWork (config ^. jobName)
+            result <- doWork workerId config
 
-            if workExists then do
-                curPath <- getCurrentDirectory
-
-                let workingPath = getWorkingPath config
-
-                setCurrentDirectory workingPath
-
-                (taskId, jobData) <- getWork (config ^. jobName) workerId
-                putStrLn $ "Running task: " ++ show taskId
-
-                let resultPaths = getResultPaths config
-
-                curFiles <- foldl Map.union Map.empty <$> mapM (listFiles False) resultPaths
-
-                -- Report that we started it and then run the commands
-                reportStatus taskId workerId "running"
-                (exitCode,_,_) <- runSysCommands jobData (config ^. runner)
-
-                -- Check for new files, if that's a thing we do.
-                newFiles <- foldl Map.union Map.empty <$> mapM (listFiles False) resultPaths
-
-                when (config ^. diffUpload) $ do
-                    let diff = Map.differenceWith (\cur new -> if cur >= new then Nothing else Just new) curFiles newFiles
-                    let diffKeys = Map.keys diff ++ (Map.keys newFiles \\ Map.keys curFiles) -- Make sure to include new files as well as modified files.
-
-                    -- Upload new/modified files.
-                    mapM_ (\p -> whenM (doesFileExist p) $ do
-                                    putStrLn $ "Uploading: " ++ p
-                                    uploadFile (config ^. jobName) taskId p) diffKeys
-
-                setCurrentDirectory curPath
-
-                if config ^. reusePaths then
+            case result of
+                Nothing -> pure ()
+                Just (taskId, exitCode) ->
                     case exitCode of
                         ExitSuccess -> do
                             reportStatus taskId workerId "finished"
@@ -151,35 +173,44 @@ runJob job = do
                             -- TODO: Look at the exit code and send it.
                             reportStatus taskId workerId "failed"
                             runnerLoopNoSetup config workerId
-                else
-                    pure (exitCode, taskId)
-            else
-                pure (ExitSuccess, -1)
 
-        runnerLoop config workerId =
-            whenM (isWork (config ^. jobName)) $ do
-                -- Create the directory structure.
-                workConfig <- initStructure config
+        runnerLoop config workerId = do
+                -- Create a clean copy of the directory structure.
+            workConfig <- initStructure config
+            result <- doWork workerId workConfig
 
-                (exitCode, taskId) <- runnerLoopNoSetup workConfig workerId
-
-                case exitCode of
-                    ExitSuccess -> do
-                        reportStatus taskId workerId "finished"
-                        runnerLoop config workerId
-                    ExitFailure _ -> do
-                        -- TODO: Look at the exit code and send it.
-                        reportStatus taskId workerId "failed"
-                        runnerLoop config workerId
+            case result of
+                Nothing -> pure ()
+                Just (taskId, exitCode) ->
+                    case exitCode of
+                        ExitSuccess -> do
+                            reportStatus taskId workerId "finished"
+                            runnerLoop config workerId
+                        ExitFailure _ -> do
+                            -- TODO: Look at the exit code and send it.
+                            reportStatus taskId workerId "failed"
+                            runnerLoop config workerId
 
 -----------------------------------------------
 -- These functions can only be run on the server where the PostgreSQL server is hosted.
 ----------------------------------------------
-initJob :: FilePath -> IO ()
-initJob configPath = do
+submitJobConfig :: FilePath -> IO Config
+submitJobConfig configPath = do
     putStrLn "Reading configuration file."
     rawConfig <- readFile configPath
     config <- readConfig configPath
+
+    putStrLn $ "Submitting job, if necessary (will not duplicate): " ++ (config ^. jobName)
+    runFunction "select jobs_insert(?)" (Only (config ^. jobName)) :: IO [Only ()]
+
+    putStrLn $ "Submitting configuration for version: " ++ (config ^. jobVersion)
+    runFunction "select configs_insert(?, ?, ?, ?)" (config ^. jobName, config ^. jobVersion, rawConfig, config ^. timeout) :: IO [Only ()]
+
+    pure config
+
+submitJob :: FilePath -> IO ()
+submitJob configPath = do
+    config <- submitJobConfig configPath
 
     let configDir = takeDirectory configPath
 
@@ -197,9 +228,6 @@ initJob configPath = do
     let expectedKeys = map fst $ head readTaskData
     let taskData = filter (\r -> map fst r == expectedKeys) readTaskData
     print taskData
-
-    putStrLn $ "Submitting job: " ++ (config ^. jobName)
-    runFunction "select jobs_insert(?, ?)" (config ^. jobName, rawConfig) :: IO [Only ()]
 
     putStrLn $ "Submitting " ++ show (length taskData) ++ " tasks."
     mapM_ (insertTask config) taskData

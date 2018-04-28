@@ -1,12 +1,13 @@
 CREATE OR REPLACE FUNCTION jobs_insert
 (
-    job_name varchar,
-    config varchar
+    job_name varchar
 )
 RETURNS void AS $$
 BEGIN
-    INSERT INTO jobs (name, config)
-    VALUES (job_name, config);
+    IF NOT EXISTS(SELECT 1 FROM jobs WHERE name = job_name) THEN
+        INSERT INTO jobs (name)
+        VALUES (job_name);
+    END IF;
 END;
 $$ LANGUAGE plpgsql;
 

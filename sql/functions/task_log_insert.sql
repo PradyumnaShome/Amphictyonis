@@ -6,8 +6,6 @@ CREATE OR REPLACE FUNCTION task_log_insert
 )
 RETURNS void AS $$
 BEGIN
-    -- TODO: Update so that work statuses are properly kept track of, probably in another table?
-
     INSERT INTO task_log
     (
         task_id,

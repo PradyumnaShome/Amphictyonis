@@ -19,8 +19,10 @@ handleArgs args =
             case args ^. job of
                 "start" -> server
                 str -> putStrLn $ "Unknown server command: " ++ str
-        "init" -> initJob $ args ^. job
+        "submit" -> submitJob $ args ^. job
+        "update" -> submitJobConfig (args ^. job) >> pure ()
         "run" -> runJob (args ^. job)
+        "setup" -> setupJob (args ^. job) >> pure ()
         -- Create a new config.yaml from a default template.
         "new" -> pure ()
 

@@ -38,12 +38,13 @@ makeLenses ''File
 
 data Config = Config
     { _jobName :: String
-    , _jobVersion :: Maybe String
+    , _jobVersion :: String
     , _workerRoot :: File
     , _reusePaths :: Bool
     , _workingPath :: String
     , _resultPaths :: [String]
     , _diffUpload :: Bool
+    , _timeout :: String -- This should be a valid PostgreSQL timeout value.
     , _dataSources :: [SystemCommand]
     , _runner :: [SystemCommand] }
     deriving Show
@@ -105,12 +106,13 @@ instance FromJSON File where
 instance FromJSON Config where
     parseJSON (Object obj) =
         Config <$> obj.:"name"
-               <*> obj.:?"version"
+               <*> (fromMaybe "1.0.0.0" <$> obj.:"version")
                <*> (parseJSON =<< obj.:"worker-dir")
                <*> (fromMaybe True <$> obj.:?"reuse-paths")
                <*> (trim . fromMaybe "." <$> obj.:?"working-path")
                <*> (map trim <$> (mapM parseJSON =<< (fromMaybe ["."] <$> obj.:?"result-paths")))
                <*> (fromMaybe True <$> obj.:?"diff-upload")
+               <*> (fromMaybe "1 day" <$> obj .:? "timeout")
                <*> (mapM parseJSON =<< (fromMaybe [] <$> obj .:? "data-sources"))
                <*> (mapM parseJSON =<< (fromMaybe [] <$> obj .:? "runner"))
 
