@@ -9,9 +9,11 @@ VALUES ('any', 'Linux', 'Ubuntu'),
        ('any', 'MacOS', NULL),
        ('any', 'Windows', NULL);
 
-INSERT INTO work_statuses (name)
-VALUES ('running'),
-       ('failed'),
-       ('finished'),
-       ('aborted');
+INSERT INTO work_statuses (name, available)
+VALUES ('none', true),
+       ('requested', false),
+       ('running', false),
+       ('failed', true),
+       ('finished', false),
+       ('aborted', true);
 

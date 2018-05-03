@@ -5,7 +5,7 @@ reuse-paths: true
 
 working-path: Prime-Sample
 result-paths:
-    - .
+    - Prime-Sample
 diff-upload: true
 
 data-sources:

@@ -24,11 +24,11 @@ runScript scriptName vars = do
 sysCommand :: SystemCommand -> IO String
 sysCommand (SystemCommand str) = readCreateProcess (shell str) ""
 
-sysCommandExitCode :: SystemCommand -> IO (ExitCode, String, String)
-sysCommandExitCode (SystemCommand str) = readCreateProcessWithExitCode (shell str) ""
+sysCommandExitCode :: FilePath -> SystemCommand -> IO (ExitCode, String, String)
+sysCommandExitCode pwd (SystemCommand str) = readCreateProcessWithExitCode ((shell str) {cwd = Just pwd}) ""
 
-runSysCommands :: Map String String -> [SystemCommand] -> IO (ExitCode, String, String)
-runSysCommands vars commands = do
+runSysCommands :: FilePath -> Map String String -> [SystemCommand] -> IO (ExitCode, String, String)
+runSysCommands pwd vars commands = do
     mapM_ (uncurry setEnv) $ Map.toList vars
 
     results <- go (ExitSuccess, "", "") commands
@@ -40,7 +40,7 @@ runSysCommands vars commands = do
     where
         go (curExitCode, curOur, curErr) [] = pure (curExitCode, curOur, curErr)
         go (curExitCode, curOur, curErr) (c:cs) = do
-            (exitCode, stdout, stderr) <- sysCommandExitCode c
+            (exitCode, stdout, stderr) <- sysCommandExitCode pwd c
 
             case exitCode of
                 ExitFailure _ -> pure (exitCode, curOur ++ stdout, curErr ++ stderr)

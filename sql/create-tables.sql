@@ -71,7 +71,8 @@ CREATE TABLE task_log (
 
 CREATE TABLE work_statuses (
     work_status_id serial PRIMARY KEY,
-    name varchar NOT NULL
+    name varchar NOT NULL,
+    available boolean NOT NULL
 );
 
 CREATE TABLE workers (

@@ -45,6 +45,7 @@ dependencies:
 - parsec
 - zlib
 - base64-bytestring
+- async
 
 library:
   source-dirs: src
@@ -70,3 +71,4 @@ tests:
     - -with-rtsopts=-N
     dependencies:
     - Amphictyonis
+

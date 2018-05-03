@@ -1,11 +1,13 @@
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Client.Files where
 
 import Control.Lens
 import Control.Monad
-import Control.Monad.State (StateT)
+import Control.Monad.IO.Class
+import Control.Monad.State (MonadState)
 import qualified Control.Monad.State as State
 
 import qualified Codec.Compression.GZip as GZip
@@ -29,6 +31,8 @@ import System.Process
 
 import Text.ParserCombinators.Parsec
 
+import Client.Types
+import Process
 import Types
 import Util
 
@@ -117,8 +121,8 @@ setPath checkName newPath file
     | file ^. name == checkName = set filePath newPath file
     | otherwise = over contents (map (setPath checkName newPath)) file
 
-solveFiles :: FilePath -> File -> StateT Config IO [FileSolution]
-solveFiles rootPath file =
+solveFiles :: (MonadIO m, MonadState WorkerState m) => FilePath -> File -> m [FileSolution]
+solveFiles parentPath file =
     let sol = case file ^. source of
                 Just source ->
                     case source ^. sourceType of
@@ -129,14 +133,15 @@ solveFiles rootPath file =
                            else
                                 FileOp Touch $ file ^. name
         in do
-    reuse <- view reusePaths <$> State.get
-    pathedSol <- State.lift $
-        if reuse then
-            pure (addPath rootPath sol)
-        else
-            useUnusedPath (addPath rootPath sol)
+    reuse <- view (config . reusePaths) <$> State.get
 
-    State.modify $ over workerRoot (setPath (file ^. name) (getPath pathedSol))
+    pathedSol <-
+        if reuse then
+            pure (addPath parentPath sol)
+        else
+            liftIO $ useUnusedPath (addPath parentPath sol)
+
+    State.modify $ over (config . workerRoot) (setPath (file ^. name) (getPath pathedSol))
 
     contentsSolution <- concat <$> mapM (solveFiles (getPath pathedSol)) (file ^. contents)
 
@@ -146,11 +151,11 @@ solveFiles rootPath file =
 
     pure $ pathedSol : scriptSolution ++ contentsSolution
 
-applyFileSolution :: String -> FileSolution -> IO ()
+applyFileSolution :: (MonadIO m, MonadState WorkerState m) => String -> FileSolution -> m ()
 applyFileSolution jobName sol = do
-    putStrLn $ "Applying operation: " ++ show sol
+    liftIO $ putStrLn $ "Applying operation: " ++ show sol
 
-    case sol of
+    liftIO $ case sol of
         GitClone gitUrl destination -> gitClone gitUrl destination
         ServerRequest serverUrl destination ->
             case parseURI serverUrl of
@@ -161,27 +166,31 @@ applyFileSolution jobName sol = do
 
         FileOp Mkdir dirName -> createDirectoryIfMissing True dirName
         FileOp Touch fname -> whenM (not <$> doesFileExist fname) $ writeFile fname ""
-        RunCommand dir (SystemCommand str) -> do
-            curPath <- getCurrentDirectory
-            setCurrentDirectory dir
-
-            system str
-
-            setCurrentDirectory curPath
+        RunCommand dir com -> sysCommandExitCode dir com >> pure ()
 
 -- | Creates the directory structure for the work, then returns the updated config.
-initStructure :: Config -> IO Config
-initStructure config = do
-    putStrLn "Trying to solve file dependencies..."
-    (solution, updatedConfig) <- State.runStateT (solveFiles "." (config ^. workerRoot)) config
+initStructure :: (MonadIO m, MonadState WorkerState m) => m Config
+initStructure = do
+    liftIO $ putStrLn "Trying to solve file dependencies..."
 
-    putStrLn "Solution:"
-    mapM_ print solution
+    baseConfig <- view config <$> State.get
+    rootPath <- view workerPath <$> State.get
+    rootFile <- view (config . workerRoot) <$> State.get
 
-    putStrLn "Applying solution."
+    solution <- solveFiles rootPath rootFile
 
-    mapM_ (applyFileSolution (config ^. jobName)) solution
+    liftIO $ putStrLn "Solution:"
+    liftIO $ mapM_ print solution
 
+    liftIO $ putStrLn "Applying solution."
+
+    job <- view (config.jobName) <$> State.get
+    mapM_ (applyFileSolution job) solution
+
+    updatedConfig <- view config <$> State.get
+
+    -- Reset config.
+    State.modify $ set config baseConfig
     pure updatedConfig
 
 readConfig :: FilePath -> IO Config

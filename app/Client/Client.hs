@@ -1,5 +1,6 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Client.Client where
 
@@ -7,6 +8,9 @@ import Control.Concurrent
 import Control.Exception
 import Control.Lens
 import Control.Monad
+import Control.Monad.IO.Class
+import Control.Monad.State (MonadState)
+import qualified Control.Monad.State as State
 
 import Data.Aeson
 import Data.Aeson.Lens (key, nth, _Object)
@@ -31,6 +35,7 @@ import System.FilePath
 import System.Process
 
 import Client.Files
+import Client.Types
 import Database
 import Process
 import Types
@@ -50,7 +55,7 @@ newWorker job = do
 
 getWork :: String -> Int -> IO (Maybe (Int, Map String String))
 getWork jobName workerId = do
-    let url = "http://localhost:3000/retrieve/" ++ jobName ++ "/data"
+    let url = "http://localhost:3000/retrieve/" ++ jobName ++ "/" ++ show workerId ++ "/data"
     response <- asValue =<< get url
 
     pure $ flip parseMaybe (response ^. responseBody) $ \(Object obj) -> do
@@ -67,129 +72,108 @@ reportStatus taskId workerId status = do
     -- TODO: Handle an error.
     pure ()
 
-aborted :: Int -> IO ()
-aborted workerId = do
-    let url = "http://localhost:3000/report/" ++ show workerId ++ "/aborted"
-    get url
+doWork :: (MonadIO m, MonadState WorkerState m) => m (Maybe (Int, ExitCode))
+doWork = do
+    workingPath <- getWorkingPath . view config <$> State.get
+    job <- view (config . jobName) <$> State.get
+    wid <- view workerId <$> State.get
 
-    -- TODO: Handle an error.
-    pure ()
-
-doWork :: Int -> Config -> IO (Maybe (Int, ExitCode))
-doWork workerId config = do
-    curPath <- getCurrentDirectory
-
-    let workingPath = getWorkingPath config
-
-    setCurrentDirectory workingPath
-
-    taskInfo <- getWork (config ^. jobName) workerId
+    taskInfo <- liftIO $ getWork job wid
     case taskInfo of
         Nothing -> do
-            putStrLn $ "No more work to do for '" ++ (config ^. jobName) ++ "'"
+            liftIO $ putStrLn $ "No more work to do for '" ++ job ++ "'"
             pure Nothing
         Just (taskId, jobData) -> do
-            putStrLn $ "Running task: " ++ show taskId
+            liftIO $ reportStatus taskId wid "running"
+            liftIO $ putStrLn $ "Running task: " ++ show taskId
 
-            let resultPaths = getResultPaths config
+            resultPaths <- getResultPaths . view config <$> State.get
 
-            curFiles <- foldl Map.union Map.empty <$> mapM (listFiles False) resultPaths
+            curFiles <- liftIO $ foldl Map.union Map.empty <$> mapM (listFiles False) resultPaths
 
             -- Report that we started it and then run the commands
-            reportStatus taskId workerId "running"
-            (exitCode,_,_) <- runSysCommands jobData (config ^. runner)
+            runnerScript <- view (config . runner) <$> State.get
+            (exitCode,_,_) <- liftIO $ runSysCommands workingPath jobData runnerScript
 
             -- Check for new files, if that's a thing we do.
-            newFiles <- foldl Map.union Map.empty <$> mapM (listFiles False) resultPaths
+            newFiles <- liftIO $ foldl Map.union Map.empty <$> mapM (listFiles False) resultPaths
 
-            when (config ^. diffUpload) $ do
+            whenM (view (config . diffUpload) <$> State.get) $ liftIO $ do
                 let diff = Map.differenceWith (\cur new -> if cur >= new then Nothing else Just new) curFiles newFiles
                 let diffKeys = Map.keys diff ++ (Map.keys newFiles \\ Map.keys curFiles) -- Make sure to include new files as well as modified files.
 
                 -- Upload new/modified files.
                 mapM_ (\p -> whenM (doesFileExist p) $ do
                                 putStrLn $ "Uploading: " ++ p
-                                uploadFile (config ^. jobName) taskId p) diffKeys
-
-            setCurrentDirectory curPath
+                                uploadFile job taskId p) diffKeys
 
             pure $ Just (taskId, exitCode)
 
 setupJob :: String -> IO Config
 setupJob job = do
-    -- We want to do everything in a separate directory.
-    createDirectoryIfMissing True job
-    setCurrentDirectory job
-
     putStrLn "Getting latest config.yaml."
     contents <- requestConfig job
-    writeFile "config.yaml" contents
+    writeFile (job ++ "/config.yaml") contents
 
-    readConfig "config.yaml"
+    readConfig (job ++ "/config.yaml")
 
 runJob :: String -> IO ()
 runJob job = do
-    curPath <- getCurrentDirectory
+    createDirectoryIfMissing True job
 
-    config <- setupJob job
+    baseConfig <- setupJob job
 
     workerId <- newWorker job
     putStrLn $ "Got worker id: " ++ show workerId
 
-    let workingPath = "worker-" ++ show workerId
+    let workingPath = job ++ "/worker-" ++ show workerId
     createDirectoryIfMissing True workingPath
-    setCurrentDirectory workingPath
 
     putStrLn "Beginning runner loop."
 
-    flip onException (abort curPath workerId) $ do
-        if config ^. reusePaths then do
-            workConfig <- initStructure config
-            runnerLoopNoSetup workConfig workerId
-            pure ()
+    flip onException (abort workerId) $ do
+        -- If we reuse the paths, then just set up everything once.
+        if baseConfig ^. reusePaths then
+            State.runStateT (initStructure >>= (\workConfig -> do
+                State.modify $ set config workConfig
+                runnerLoop)) $ WorkerState workerId workingPath baseConfig
         else
-            runnerLoop config workerId
+            State.runStateT runnerLoop $ WorkerState workerId workingPath baseConfig
 
-        setCurrentDirectory curPath
+        pure ()
 
     where
-        abort path workerId = do
+        abort workerId = do
             putStrLn "Aborting current task..."
-            aborted workerId
+            let url = "http://localhost:3000/report/" ++ show workerId ++ "/aborted"
+            get url
 
-            setCurrentDirectory path
+            -- TODO: Handle an error.
+            pure ()
 
-        runnerLoopNoSetup config workerId = do
-            result <- doWork workerId config
+        runnerLoop = do
+            baseConfig <- view config <$> State.get
+            curWorkerId <- view workerId <$> State.get
 
-            case result of
-                Nothing -> pure ()
-                Just (taskId, exitCode) ->
-                    case exitCode of
-                        ExitSuccess -> do
-                            reportStatus taskId workerId "finished"
-                            runnerLoopNoSetup config workerId
-                        ExitFailure _ -> do
-                            -- TODO: Look at the exit code and send it.
-                            reportStatus taskId workerId "failed"
-                            runnerLoopNoSetup config workerId
+            curConfig <-
+                if not (baseConfig ^. reusePaths) then
+                    initStructure
+                else
+                    pure baseConfig
 
-        runnerLoop config workerId = do
-                -- Create a clean copy of the directory structure.
-            workConfig <- initStructure config
-            result <- doWork workerId workConfig
+            result <- doWork
 
             case result of
                 Nothing -> pure ()
                 Just (taskId, exitCode) ->
                     case exitCode of
                         ExitSuccess -> do
-                            reportStatus taskId workerId "finished"
-                            runnerLoop config workerId
+                            liftIO $ reportStatus taskId curWorkerId "finished"
+                            runnerLoop
                         ExitFailure _ -> do
                             -- TODO: Look at the exit code and send it.
-                            reportStatus taskId workerId "failed"
-                            runnerLoop config workerId
+                            liftIO $ reportStatus taskId curWorkerId "failed"
+                            runnerLoop
 
 -----------------------------------------------
 -- These functions can only be run on the server where the PostgreSQL server is hosted.

@@ -20,29 +20,20 @@ import Web.Scotty
 
 import Database
 
-data TaskData = TaskData Integer String String
-    deriving Show
-
-instance FromRow TaskData where
-    fromRow = TaskData <$> field <*> field <*> field
-
 server :: IO ()
 server = scotty 3000 $ do
-    get "/retrieve/:job/data" $ do
+    get "/retrieve/:job/:workerId/data" $ do
         job <- param "job" :: ActionM T.Text
-        [Only taskId] <- liftIO (runFunction "select tasks_get_next(?)" (Only job) :: IO [Only Integer])
-        dataItems <- liftIO (runFunction "select * from task_data_get(?)" (Only taskId) :: IO [(String, String)])
-        json $ object ["taskId" .= taskId, "data" .= Map.fromList dataItems]
+        workerId <- param "workerId" :: ActionM Int
+        taskIds <- liftIO (runFunction "select tasks_get_next(?, ?)" (job, workerId) :: IO [Only Integer])
 
-    get "/retrieve/:job/id" $ do
-        job <- param "job" :: ActionM String
-        result <- liftIO (runFunction "select tasks_get_next(?)" (Only job) :: IO [Only Integer])
+        case taskIds of
+            (Only taskId:_) -> do
+                dataItems <- liftIO (runFunction "select * from task_data_get(?)" (Only taskId) :: IO [(String, String)])
+                json $ object ["taskId" .= taskId, "data" .= Map.fromList dataItems]
 
-        -- Give empty response, client will know it means there is no more work.
-        if null result then
-            text ""
-        else
-            text $ T.pack $ show $ head result
+            -- Return empty response so the client knows that there is no more work to do.
+            [] -> text ""
 
     get "/retrieve/:job/new-worker/:name" $ do
         job <- param "job" :: ActionM String
