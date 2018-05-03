@@ -15,6 +15,7 @@ import qualified Control.Monad.State as State
 import Data.Aeson
 import Data.Aeson.Lens (key, nth, _Object)
 import Data.Aeson.Types
+import qualified Data.ByteString.Lazy as B
 import qualified Data.ByteString.Lazy.Char8 as Char8
 import Data.List ((\\))
 import Data.Map (Map)
@@ -56,13 +57,18 @@ newWorker job = do
 getWork :: String -> Int -> IO (Maybe (Int, Map String String))
 getWork jobName workerId = do
     let url = "http://localhost:3000/retrieve/" ++ jobName ++ "/" ++ show workerId ++ "/data"
-    response <- asValue =<< get url
+    baseR <- get url
 
-    pure $ flip parseMaybe (response ^. responseBody) $ \(Object obj) -> do
-            taskId <- obj .: "taskId"
-            d <- obj .: "data"
+    if B.null (baseR ^. responseBody) then
+        pure Nothing
+    else do
+        response <- asValue baseR
 
-            pure (taskId, d)
+        pure $ flip parseMaybe (response ^. responseBody) $ \(Object obj) -> do
+                taskId <- obj .: "taskId"
+                d <- obj .: "data"
+
+                pure (taskId, d)
 
 reportStatus :: Int -> Int -> String -> IO ()
 reportStatus taskId workerId status = do

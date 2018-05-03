@@ -3,7 +3,7 @@ CREATE OR REPLACE FUNCTION tasks_get_next
     job_name varchar,
     worker_id integer
 )
-RETURNS integer AS $$
+RETURNS TABLE (task_id integer) AS $$
 DECLARE chosen_task_id integer;
 BEGIN
     SELECT t.task_id
@@ -13,9 +13,14 @@ BEGIN
     LIMIT 1
     INTO chosen_task_id;
 
-    PERFORM task_log_insert(chosen_task_id, worker_id, 'requested');
+    IF chosen_task_id IS NOT NULL THEN
+        PERFORM task_log_insert(chosen_task_id, worker_id, 'requested');
 
-    RETURN chosen_task_id;
+        RETURN QUERY
+        SELECT chosen_task_id;
+    ELSE
+        RETURN;
+    END IF;
 END
 $$ LANGUAGE plpgsql;
 
