@@ -45,7 +45,7 @@ knownCommands = ["server", "submit", "update", "run", "setup", "new", "list"]
 
 argParser :: Opt.Parser Args
 argParser = Args
-    <$> argument str (help "Command to run.")
+    <$> argument str (completer (listCompleter knownCommands) <> help "Command to run.")
     <*> (fromMaybe "" <$> optional (argument str (help "The job to run.")))
     <*> (fromMaybe 1 <$> optional (option auto (long "number" <> short 'n' <> help "How many workers to run.")))
     <*> flag False True (long "no-prompt" <> help "Whether to prompt the user for sanity checking. Generally, shouldn't be used.")
@@ -65,6 +65,7 @@ nonDefault field def a b
 
 mergeArgs :: Args -> Args -> Args
 mergeArgs a b = Args
+
     { _command = nonEmpty Args.command a b
     , _job = nonEmpty job a b
     , _number = nonDefault number 1 a b
