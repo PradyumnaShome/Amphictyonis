@@ -14,14 +14,15 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Maybe (isJust)
 import Data.Monoid (mconcat)
-import qualified Data.Text.Lazy as T
+import qualified Data.Text.Lazy as LT
+import qualified Data.Text as T
 
 import Web.Scotty
 
 import Database
 
-server :: IO ()
-server = scotty 3000 $ do
+server :: Int -> IO ()
+server p = scotty p $ do
     get "/retrieve/:job/:workerId/data" $ do
         job <- param "job" :: ActionM T.Text
         workerId <- param "workerId" :: ActionM Int
@@ -40,7 +41,7 @@ server = scotty 3000 $ do
         name <- param "name" :: ActionM String
 
         [Only worker_id] <- liftIO (runFunction "select workers_insert(?, ?)" (name, job) :: IO [Only Integer])
-        text $ T.pack $ show worker_id
+        text $ LT.pack $ show worker_id
 
     get "/retrieve/:job/request-file/:filename" $ do
         job <- param "job" :: ActionM String
@@ -63,6 +64,11 @@ server = scotty 3000 $ do
         liftIO (runFunction "select tasks_aborted(?)" (Only workerId) :: IO [Only ()])
 
         pure ()
+
+    get "/list" $ do
+        results <- liftIO (runFunction_ "select jobs_list()" :: IO [(T.Text, Integer)])
+
+        json $ object $ map (uncurry (.=)) results
 
     post "/report/:id/:workerId/status" $ do
         status <- param "status" :: ActionM String

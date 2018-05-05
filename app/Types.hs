@@ -51,6 +51,24 @@ data Config = Config
 
 makeLenses ''Config
 
+emptyConfig = Config
+    { _jobName = ""
+    , _jobVersion = ""
+    , _workerRoot = File
+        { _name = ""
+        , _source = Nothing
+        , _filePath = ""
+        , _isDirectory = False
+        , _script = []
+        , _contents = []}
+    , _workingPath = ""
+    , _reusePaths = False
+    , _resultPaths = []
+    , _diffUpload = False
+    , _timeout = ""
+    , _dataSources = []
+    , _runner = []}
+
 data FileOperation = Mkdir | Touch
     deriving Show
 

@@ -9,6 +9,8 @@ import Control.Monad
 
 import GHC.Conc.Sync
 
+import Text.SpellingSuggest
+
 import Args
 import Client.Client
 import Server
@@ -42,22 +44,30 @@ checkSafety args a = do
 
 runWorkers :: Args -> IO ()
 runWorkers args = checkSafety args $ \n -> do
-    asyncs <- mapM (\_ -> async (runJob (args ^. job))) [1..n]
+    asyncs <- mapM (\_ -> async (runJob args)) [1..n]
 
     -- cancel them all if any one of them throws anything (will handle keyboard interrupts too).
     onException (mapM_ wait asyncs) $ mapM_ cancel asyncs
 
 handleArgs :: Args -> IO ()
-handleArgs args =
+handleArgs args = do
+    print args
     case args ^. command of
         "server" ->
             case args ^. job of
-                "start" -> server
+                "start" -> server $ args ^.port
                 str -> putStrLn $ "Unknown server command: " ++ str
-        "submit" -> submitJob $ args ^. job
-        "update" -> submitJobConfig (args ^. job) >> pure ()
+        "submit" -> submitJob args
+        "update" -> submitJobConfig args >> pure ()
         "run" -> runWorkers args
-        "setup" -> setupJob (args ^. job) >> pure ()
+        "setup" -> setupJob (args^.job) >> pure ()
         -- Create a new config.yaml from a default template.
         "new" -> pure ()
+
+        "list" -> listJobs args
+
+        c -> do
+            putStrLn $ "Unknown command: '" ++ c ++ "'"
+            putStrLn "Maybe you meant:"
+            mapM_ putStrLn $ suggestFromList defaultSearchParams knownCommands c
 

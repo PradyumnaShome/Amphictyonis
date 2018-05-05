@@ -46,6 +46,7 @@ dependencies:
 - zlib
 - base64-bytestring
 - async
+- spelling-suggest
 
 library:
   source-dirs: src

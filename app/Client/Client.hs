@@ -35,6 +35,7 @@ import System.Exit
 import System.FilePath
 import System.Process
 
+import Args
 import Client.Files
 import Client.Types
 import Database
@@ -42,27 +43,45 @@ import Process
 import Types
 import Util
 
-newWorker :: String -> IO Int
-newWorker job = do
-    hostName <- getHostName
+-- | Performs a request, meant to be used with Network.Wreq request functions like `get` and `post`.
+-- Provide the path relative to the host and port specified in the args (in the WorkerState).
+doRequest :: (MonadIO m, MonadState WorkerState m) =>
+             (String -> IO (Response B.ByteString)) ->
+             String ->
+             m (Response B.ByteString)
+doRequest requester path = do
+    h <- view (args.host) <$> State.get
+    p <- view (args.port) <$> State.get
 
-    let url = "http://localhost:3000/retrieve/" ++ job ++ "/new-worker/" ++ hostName
-    response <- get url
+    liftIO $ requester $ "http://" ++ h ++ ":" ++ show p ++ path
 
-    case read . Char8.unpack <$> response ^? responseBody of
-        -- TODO: Better error handling.
-        Nothing -> error $ show response
-        Just i -> pure i
+newWorker :: (MonadIO m, MonadState WorkerState m) => m Int
+newWorker = do
+    job <- view (args.job) <$> State.get
+    hostName <- liftIO getHostName
 
-getWork :: String -> Int -> IO (Maybe (Int, Map String String))
-getWork jobName workerId = do
-    let url = "http://localhost:3000/retrieve/" ++ jobName ++ "/" ++ show workerId ++ "/data"
-    baseR <- get url
+    response <- doRequest get $ "/retrieve/" ++ job ++ "/new-worker/" ++ hostName
+
+    newId <-
+        case read . Char8.unpack <$> response ^? responseBody of
+            -- TODO: Better error handling.
+            Nothing -> error $ show response
+            Just i -> pure i
+
+    State.modify $ set workerId newId
+    pure newId
+
+getWork :: (MonadIO m, MonadState WorkerState m) => m (Maybe (Int, Map String String))
+getWork = do
+    job <- view (args.job) <$> State.get
+    workerId <- view workerId <$> State.get
+
+    baseR <- doRequest get $ "/retrieve/" ++ job ++ "/" ++ show workerId ++ "/data"
 
     if B.null (baseR ^. responseBody) then
         pure Nothing
     else do
-        response <- asValue baseR
+        response <- liftIO $ asValue baseR
 
         pure $ flip parseMaybe (response ^. responseBody) $ \(Object obj) -> do
                 taskId <- obj .: "taskId"
@@ -70,10 +89,11 @@ getWork jobName workerId = do
 
                 pure (taskId, d)
 
-reportStatus :: Int -> Int -> String -> IO ()
-reportStatus taskId workerId status = do
-    let url = "http://localhost:3000/report/" ++ show taskId ++ "/" ++ show workerId ++ "/status"
-    post url $ partString "status" status
+reportStatus :: (MonadIO m, MonadState WorkerState m) => Int -> String -> m ()
+reportStatus taskId status = do
+    workerId <- view workerId <$> State.get
+
+    doRequest (`post` partString "status" status) $ "/report/" ++ show taskId ++ "/" ++ show workerId ++ "/status"
 
     -- TODO: Handle an error.
     pure ()
@@ -81,16 +101,15 @@ reportStatus taskId workerId status = do
 doWork :: (MonadIO m, MonadState WorkerState m) => m (Maybe (Int, ExitCode))
 doWork = do
     workingPath <- getWorkingPath . view config <$> State.get
-    job <- view (config . jobName) <$> State.get
-    wid <- view workerId <$> State.get
+    job <- view (config.jobName) <$> State.get
 
-    taskInfo <- liftIO $ getWork job wid
+    taskInfo <- getWork
     case taskInfo of
         Nothing -> do
             liftIO $ putStrLn $ "No more work to do for '" ++ job ++ "'"
             pure Nothing
         Just (taskId, jobData) -> do
-            liftIO $ reportStatus taskId wid "running"
+            reportStatus taskId "running"
             liftIO $ putStrLn $ "Running task: " ++ show taskId
 
             resultPaths <- getResultPaths . view config <$> State.get
@@ -123,40 +142,31 @@ setupJob job = do
 
     readConfig (job ++ "/config.yaml")
 
-runJob :: String -> IO ()
-runJob job = do
-    createDirectoryIfMissing True job
+setupRunner :: (MonadIO m, MonadState WorkerState m) => m ()
+setupRunner = do
+    job <- view (args.job) <$> State.get
 
-    baseConfig <- setupJob job
+    liftIO $ createDirectoryIfMissing True job
 
-    workerId <- newWorker job
-    putStrLn $ "Got worker id: " ++ show workerId
+    baseConfig <- liftIO $ setupJob job
+    State.modify $ set config baseConfig
 
-    let workingPath = job ++ "/worker-" ++ show workerId
-    createDirectoryIfMissing True workingPath
+    newWorker
+    wid <- view workerId <$> State.get
+    liftIO $ putStrLn $ "Got worker id: " ++ show wid
 
-    putStrLn "Beginning runner loop."
+    let workingPath = job ++ "/worker-" ++ show wid
+    liftIO $ createDirectoryIfMissing True workingPath
 
-    flip onException (abort workerId) $ do
-        -- If we reuse the paths, then just set up everything once.
-        if baseConfig ^. reusePaths then
-            State.runStateT (initStructure >>= (\workConfig -> do
-                State.modify $ set config workConfig
-                runnerLoop)) $ WorkerState workerId workingPath baseConfig
-        else
-            State.runStateT runnerLoop $ WorkerState workerId workingPath baseConfig
+    liftIO $ putStrLn "Beginning runner loop."
+    -- If we reuse the paths, then just set up everything once.
+    when (baseConfig ^. reusePaths) $ do
+        workConfig <- initStructure
+        State.modify $ set config workConfig
 
-        pure ()
+    runnerLoop
 
     where
-        abort workerId = do
-            putStrLn "Aborting current task..."
-            let url = "http://localhost:3000/report/" ++ show workerId ++ "/aborted"
-            get url
-
-            -- TODO: Handle an error.
-            pure ()
-
         runnerLoop = do
             baseConfig <- view config <$> State.get
             curWorkerId <- view workerId <$> State.get
@@ -174,18 +184,45 @@ runJob job = do
                 Just (taskId, exitCode) ->
                     case exitCode of
                         ExitSuccess -> do
-                            liftIO $ reportStatus taskId curWorkerId "finished"
+                            reportStatus taskId "finished"
                             runnerLoop
                         ExitFailure _ -> do
                             -- TODO: Look at the exit code and send it.
-                            liftIO $ reportStatus taskId curWorkerId "failed"
+                            reportStatus taskId "failed"
                             runnerLoop
+
+runJob :: Args -> IO ()
+runJob args = do
+    -- Need to do this because onException works with IO, not MonadIO
+    let blankState = WorkerState (-1) "." args emptyConfig
+    (_, newState) <- State.runStateT newWorker blankState
+    let wid = view workerId newState
+
+    flip onException (abort newState) $ do
+        State.runStateT setupRunner newState
+
+        pure ()
+
+    where
+        abort s = do
+            flip State.runStateT s $ do
+                workerId <- view workerId <$> State.get
+                liftIO $ putStrLn "Aborting current task..."
+                doRequest get $ "/report/" ++ show workerId ++ "/aborted"
+
+                -- TODO: Handle an error while aborting.
+
+            pure ()
+
+listJobs :: Args -> IO ()
+listJobs = print
 
 -----------------------------------------------
 -- These functions can only be run on the server where the PostgreSQL server is hosted.
 ----------------------------------------------
-submitJobConfig :: FilePath -> IO Config
-submitJobConfig configPath = do
+submitJobConfig :: Args -> IO Config
+submitJobConfig args = do
+    let configPath = args ^. job
     putStrLn "Reading configuration file."
     rawConfig <- readFile configPath
     config <- readConfig configPath
@@ -198,9 +235,10 @@ submitJobConfig configPath = do
 
     pure config
 
-submitJob :: FilePath -> IO ()
-submitJob configPath = do
-    config <- submitJobConfig configPath
+submitJob :: Args -> IO ()
+submitJob args = do
+    let configPath = args ^. job -- Because job is the second argument passed to `amphi submit`
+    config <- submitJobConfig args
 
     let configDir = takeDirectory configPath
 

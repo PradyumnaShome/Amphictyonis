@@ -10,6 +10,7 @@ BEGIN
         FROM configs AS C
         INNER JOIN jobs AS j ON c.job_id = j.job_id
         WHERE j.name = job_name
+        LIMIT 1
     );
 END;
 $$ LANGUAGE plpgsql;
